@@ -17,7 +17,7 @@ import {
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
 const GENERATOR_CHANNEL_ID = "1488997560415682640";
 const ALLOWED_ROLE_ID      = "1488521626059542538";
-const EMBED_COLOR          = 0x0a4939;
+const EMBED_COLOR          = 0x0c0c0c;
 const CREATION_COOLDOWN_MS = 10_000;
 const ROOM_EMOJIS = ["🐡","🍄","🍓","🍋","🥝","👻","🐻","🍰","🧸","🐯","🐙","🦕","🌴","🍄‍🟫","🌼","🌺","🔥"];
 
