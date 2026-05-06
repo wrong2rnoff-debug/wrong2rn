@@ -21,11 +21,9 @@ const EMBED_COLOR          = 0x0c0c0c;
 const CREATION_COOLDOWN_MS = 10_000;
 const ROOM_EMOJIS = ["🐡","🍄","🍓","🍋","🥝","👻","🐻","🍰","🧸","🐯","🐙","🦕","🌴","🍄‍🟫","🌼","🌺","🔥"];
 
-// Matches any room emoji at the very start of a string (with optional trailing space/separator)
-const EMOJI_PREFIX_RE = new RegExp(
-  `^(${ROOM_EMOJIS.map(e => e.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\s*`,
-  "u"
-);
+// Matches ANY emoji sequence at the very start of a string (including ZWJ compound emojis)
+// This covers whatever emoji the other bot may have applied — not just this bot's list
+const EMOJI_PREFIX_RE = /^(\p{Extended_Pictographic}(?:\uFE0F)?(?:\u200D\p{Extended_Pictographic}(?:\uFE0F)?)*)\s*/u;
 
 // ─── STATE ────────────────────────────────────────────────────────────────────
 // voiceChannelId → { voiceChannelId, ownerId, panelMessageId, locked, trustedUsers, userLimit, emoji, guildId }
@@ -56,16 +54,18 @@ async function removeEmojiFromNickname(member) {
   if (member.guild.ownerId === member.id) return;
 
   try {
-    const current = member.nickname;
+    // Fetch fresh data — the cached nickname can be stale
+    const fresh = await member.fetch(true).catch(() => member);
+    const current = fresh.nickname;
     if (!current) return; // No nickname set — nothing to strip
 
     const stripped = current.replace(EMOJI_PREFIX_RE, "").trim();
     if (stripped === current) return; // No emoji prefix found — nothing changed
 
     // Clear the nickname entirely if the stripped result is just their username
-    const newNick = stripped === member.user.username ? null : stripped;
+    const newNick = stripped === fresh.user.username ? null : stripped;
 
-    await member.setNickname(newNick, "Left voice channel").catch(() => {});
+    await fresh.setNickname(newNick, "Left voice channel").catch(() => {});
   } catch (err) {
     console.error(`[nick] Failed to remove emoji for ${member.user.tag}:`, err.message);
   }
@@ -286,19 +286,22 @@ async function onVoiceStateUpdate(oldState, newState) {
   const member = newState.member ?? oldState.member;
   if (!member || member.user.bot) return;
 
-  if (newState.channelId === GENERATOR_CHANNEL_ID) {
+  const leftId   = oldState.channelId;
+  const joinedId = newState.channelId;
+
+  // ── STEP 1: Nickname cleanup — always runs when leaving ANY channel ────────
+  if (leftId) {
+    await removeEmojiFromNickname(member);
+  }
+
+  // ── STEP 2: Temp room generator ───────────────────────────────────────────
+  if (joinedId === GENERATOR_CHANNEL_ID) {
     await createTempRoom(member, client);
     return;
   }
 
-  const leftId   = oldState.channelId;
-  const joinedId = newState.channelId;
-
-  // ── User left a channel ───────────────────────────────────────────────────
-  // Remove the emoji from their nickname regardless of which channel they left
+  // ── STEP 3: Temp room panel / ownership updates ───────────────────────────
   if (leftId) {
-    await removeEmojiFromNickname(member);
-
     const room = tempRooms.get(leftId);
     if (room) {
       const vc        = oldState.guild.channels.cache.get(leftId);
@@ -323,8 +326,7 @@ async function onVoiceStateUpdate(oldState, newState) {
     }
   }
 
-  // ── User joined a channel ─────────────────────────────────────────────────
-  if (joinedId && joinedId !== GENERATOR_CHANNEL_ID) {
+  if (joinedId) {
     const room = tempRooms.get(joinedId);
     if (room) await sendOrUpdatePanel(room, newState.guild);
   }
@@ -604,3 +606,4 @@ client.on("interactionCreate", async (interaction) => {
 const token = process.env.DISCORD_TOKEN;
 if (!token) { console.error("❌ DISCORD_TOKEN env var is not set."); process.exit(1); }
 client.login(token);
+
