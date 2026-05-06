@@ -21,10 +21,6 @@ const EMBED_COLOR          = 0x0c0c0c;
 const CREATION_COOLDOWN_MS = 10_000;
 const ROOM_EMOJIS = ["🐡","🍄","🍓","🍋","🥝","👻","🐻","🍰","🧸","🐯","🐙","🦕","🌴","🍄‍🟫","🌼","🌺","🔥"];
 
-// Matches ANY emoji sequence at the very start of a string (including ZWJ compound emojis)
-// This covers whatever emoji the other bot may have applied — not just this bot's list
-const EMOJI_PREFIX_RE = /^(\p{Extended_Pictographic}(?:\uFE0F)?(?:\u200D\p{Extended_Pictographic}(?:\uFE0F)?)*)\s*/u;
-
 // ─── STATE ────────────────────────────────────────────────────────────────────
 // voiceChannelId → { voiceChannelId, ownerId, panelMessageId, locked, trustedUsers, userLimit, emoji, guildId }
 const tempRooms = new Map();
@@ -39,36 +35,6 @@ function getRoomByOwner(ownerId) {
     if (room.ownerId === ownerId) return room;
   }
   return undefined;
-}
-
-// ─── NICKNAME HELPER ─────────────────────────────────────────────────────────
-
-/**
- * Strip any room emoji prefix from the member's nickname when they leave a voice channel.
- * Works for any channel in the server, not just temp rooms.
- * If the stripped result matches their username, the nickname is cleared entirely.
- */
-async function removeEmojiFromNickname(member) {
-  if (member.user.bot) return;
-  // Bots cannot change the server owner's nickname
-  if (member.guild.ownerId === member.id) return;
-
-  try {
-    // Fetch fresh data — the cached nickname can be stale
-    const fresh = await member.fetch(true).catch(() => member);
-    const current = fresh.nickname;
-    if (!current) return; // No nickname set — nothing to strip
-
-    const stripped = current.replace(EMOJI_PREFIX_RE, "").trim();
-    if (stripped === current) return; // No emoji prefix found — nothing changed
-
-    // Clear the nickname entirely if the stripped result is just their username
-    const newNick = stripped === fresh.user.username ? null : stripped;
-
-    await fresh.setNickname(newNick, "Left voice channel").catch(() => {});
-  } catch (err) {
-    console.error(`[nick] Failed to remove emoji for ${member.user.tag}:`, err.message);
-  }
 }
 
 // ─── EMBED ────────────────────────────────────────────────────────────────────
@@ -103,7 +69,7 @@ function buildEmbed(room, guild) {
   }
   if (!memberValue) memberValue = "*No one connected*";
 
-  const owner     = guild.members.cache.get(room.ownerId);
+  const owner    = guild.members.cache.get(room.ownerId);
   const avatarUrl = owner?.displayAvatarURL({ size: 256 }) ?? null;
 
   return new EmbedBuilder()
@@ -286,21 +252,14 @@ async function onVoiceStateUpdate(oldState, newState) {
   const member = newState.member ?? oldState.member;
   if (!member || member.user.bot) return;
 
-  const leftId   = oldState.channelId;
-  const joinedId = newState.channelId;
-
-  // ── STEP 1: Nickname cleanup — always runs when leaving ANY channel ────────
-  if (leftId) {
-    await removeEmojiFromNickname(member);
-  }
-
-  // ── STEP 2: Temp room generator ───────────────────────────────────────────
-  if (joinedId === GENERATOR_CHANNEL_ID) {
+  if (newState.channelId === GENERATOR_CHANNEL_ID) {
     await createTempRoom(member, client);
     return;
   }
 
-  // ── STEP 3: Temp room panel / ownership updates ───────────────────────────
+  const leftId   = oldState.channelId;
+  const joinedId = newState.channelId;
+
   if (leftId) {
     const room = tempRooms.get(leftId);
     if (room) {
@@ -315,7 +274,7 @@ async function onVoiceStateUpdate(oldState, newState) {
       if (room.ownerId === member.id) {
         const next = remaining.first();
         if (next) {
-          room.ownerId        = next.id;
+          room.ownerId       = next.id;
           room.panelMessageId = null;
           await sendOrUpdatePanel(room, oldState.guild);
           console.log(`[~] Auto-claim: ${next.user.tag} is now owner of ${leftId}`);
@@ -326,7 +285,7 @@ async function onVoiceStateUpdate(oldState, newState) {
     }
   }
 
-  if (joinedId) {
+  if (joinedId && joinedId !== GENERATOR_CHANNEL_ID) {
     const room = tempRooms.get(joinedId);
     if (room) await sendOrUpdatePanel(room, newState.guild);
   }
@@ -420,7 +379,7 @@ async function handleButton(interaction) {
       if (vc.members.has(room.ownerId)) {
         return interaction.followUp({ content: "The owner is still in the room.", ephemeral: true });
       }
-      room.ownerId        = userId;
+      room.ownerId       = userId;
       room.panelMessageId = null;
       await sendOrUpdatePanel(room, guild);
       break;
@@ -579,9 +538,8 @@ client.once("clientReady", async () => {
   for (const guild of client.guilds.cache.values()) {
     const me      = guild.members.me;
     const missing = [];
-    if (!me?.permissions.has(PermissionFlagsBits.ManageChannels))  missing.push("Manage Channels");
-    if (!me?.permissions.has(PermissionFlagsBits.MoveMembers))     missing.push("Move Members");
-    if (!me?.permissions.has(PermissionFlagsBits.ManageNicknames)) missing.push("Manage Nicknames");
+    if (!me?.permissions.has(PermissionFlagsBits.ManageChannels)) missing.push("Manage Channels");
+    if (!me?.permissions.has(PermissionFlagsBits.MoveMembers))    missing.push("Move Members");
     if (missing.length) console.warn(`⚠️  Missing permissions in "${guild.name}": ${missing.join(", ")}`);
   }
 
@@ -595,7 +553,7 @@ client.on("voiceStateUpdate", async (oldState, newState) => {
 
 client.on("interactionCreate", async (interaction) => {
   try {
-    if (interaction.isButton()                && interaction.customId.startsWith("tv_")) await handleButton(interaction);
+    if (interaction.isButton()          && interaction.customId.startsWith("tv_")) await handleButton(interaction);
     else if (interaction.isStringSelectMenu() && interaction.customId.startsWith("tv_")) await handleSelectMenu(interaction);
     else if (interaction.isModalSubmit()      && interaction.customId.startsWith("tv_")) await handleModal(interaction);
   } catch (err) {
@@ -606,4 +564,3 @@ client.on("interactionCreate", async (interaction) => {
 const token = process.env.DISCORD_TOKEN;
 if (!token) { console.error("❌ DISCORD_TOKEN env var is not set."); process.exit(1); }
 client.login(token);
-
